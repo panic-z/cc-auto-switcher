@@ -1,0 +1,16 @@
+{
+  "name": "cc-auto-switcher",
+  "version": "0.1.0",
+  "description": "Auto-switch Claude Code provider based on token quota",
+  "main": "src/cli.js",
+  "bin": {
+    "cc-switcher": "./src/cli.js"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "chalk": "^4.1.2",
+    "minimist": "^1.2.8"
+  }
+}

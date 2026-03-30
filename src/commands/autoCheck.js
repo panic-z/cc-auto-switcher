@@ -39,12 +39,10 @@ async function cmdAutoCheck() {
   }
 
   const forceSwitch = errorCode && isQuotaExceededError(errorCode)
-  if (!forceSwitch) {
-    const next = selectNextProvider()
-    if (!next || next === active) return
-  }
-
   const next = selectNextProvider()
+
+  if (!forceSwitch && (!next || next === active)) return
+
   if (!next) {
     process.stderr.write('[cc-switcher] All providers exhausted — staying on current provider\n')
     return

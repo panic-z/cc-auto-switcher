@@ -12,5 +12,8 @@
   "dependencies": {
     "chalk": "^4.1.2",
     "minimist": "^1.2.8"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }

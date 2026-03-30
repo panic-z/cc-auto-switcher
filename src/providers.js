@@ -34,7 +34,7 @@ function getClaudeJsonFields(providerName, providerConfig) {
   }
 }
 
-const QUOTA_ERROR_PATTERNS = ['quota_exceeded', 'rate_limit_exceeded', 'insufficient_quota', '429', 'overloaded']
+const QUOTA_ERROR_PATTERNS = ['quota_exceeded', 'rate_limit_exceeded', 'insufficient_quota', '429']
 
 function isQuotaExceededError(errorCode) {
   const lower = String(errorCode).toLowerCase()

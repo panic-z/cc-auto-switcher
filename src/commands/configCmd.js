@@ -4,6 +4,7 @@ const readline = require('readline')
 const chalk = require('chalk')
 const { setProviderConfig, readConfig, writeConfig } = require('../config')
 const { PROVIDER_NAMES } = require('../providers')
+const { switchTo } = require('../switcher')
 
 function cmdConfigSet(args) {
   // cc-switcher config set <provider> <key> <value>
@@ -71,7 +72,13 @@ async function cmdConfigInit() {
   rl.close()
   console.log(chalk.green('\nConfiguration saved.'))
   if (config.activeProvider) {
-    console.log(`Active provider: ${config.activeProvider}`)
+    try {
+      switchTo(config.activeProvider)
+      console.log(`Active provider: ${config.activeProvider}`)
+    } catch (err) {
+      console.log(chalk.yellow(`Note: Could not apply provider to Claude Code: ${err.message}`))
+      console.log(`Run: cc-switcher use ${config.activeProvider}`)
+    }
   }
 }
 

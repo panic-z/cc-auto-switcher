@@ -1,16 +1,26 @@
 // src/providers.js
 'use strict'
 
-const PROVIDER_NAMES = ['anthropic', 'bedrock', 'openrouter', 'openai']
+const PROVIDER_TYPES = ['anthropic', 'bedrock', 'openrouter', 'openai']
+
+// Backward-compat alias
+const PROVIDER_NAMES = PROVIDER_TYPES
+
+function getProviderType(providerName, providerConfig) {
+  return (providerConfig && providerConfig.type) || providerName
+}
 
 function getClaudeJsonFields(providerName, providerConfig) {
-  switch (providerName) {
+  const type = getProviderType(providerName, providerConfig)
+  const model = providerConfig.model || null
+  switch (type) {
     case 'anthropic':
       return {
         apiKey: providerConfig.apiKey,
-        apiBaseUrl: null,
+        apiBaseUrl: providerConfig.baseUrl || null,
         useBedrock: false,
-        useVertex: false
+        useVertex: false,
+        model
       }
     case 'bedrock':
       return {
@@ -19,7 +29,8 @@ function getClaudeJsonFields(providerName, providerConfig) {
         useBedrock: true,
         useVertex: false,
         awsProfile: providerConfig.awsProfile || 'default',
-        awsRegion: providerConfig.awsRegion || 'us-east-1'
+        awsRegion: providerConfig.awsRegion || 'us-east-1',
+        model
       }
     case 'openrouter':
     case 'openai':
@@ -27,10 +38,11 @@ function getClaudeJsonFields(providerName, providerConfig) {
         apiKey: providerConfig.apiKey,
         apiBaseUrl: providerConfig.baseUrl,
         useBedrock: false,
-        useVertex: false
+        useVertex: false,
+        model
       }
     default:
-      throw new Error(`Unknown provider: ${providerName}`)
+      throw new Error(`Unknown provider type: ${type}`)
   }
 }
 
@@ -41,4 +53,4 @@ function isQuotaExceededError(errorCode) {
   return QUOTA_ERROR_PATTERNS.some(p => lower.includes(p))
 }
 
-module.exports = { PROVIDER_NAMES, getClaudeJsonFields, isQuotaExceededError }
+module.exports = { PROVIDER_TYPES, PROVIDER_NAMES, getProviderType, getClaudeJsonFields, isQuotaExceededError }

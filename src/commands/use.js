@@ -2,18 +2,15 @@
 'use strict'
 const chalk = require('chalk')
 const { switchTo } = require('../switcher')
-const { PROVIDER_NAMES } = require('../providers')
+const { readConfig } = require('../config')
 
 function cmdUse(args) {
   const provider = args._[1]
   if (!provider) {
     console.error(chalk.red('Usage: cc-switcher use <provider>'))
-    console.error(`Available providers: ${PROVIDER_NAMES.join(', ')}`)
-    process.exit(1)
-  }
-  if (!PROVIDER_NAMES.includes(provider)) {
-    console.error(chalk.red(`Unknown provider: ${provider}`))
-    console.error(`Available: ${PROVIDER_NAMES.join(', ')}`)
+    const config = readConfig()
+    const names = Object.keys(config.providers)
+    if (names.length) console.error(`Configured providers: ${names.join(', ')}`)
     process.exit(1)
   }
   try {

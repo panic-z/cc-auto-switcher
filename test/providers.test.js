@@ -5,7 +5,7 @@ const assert = require('node:assert/strict')
 const { getClaudeJsonFields, isQuotaExceededError, PROVIDER_NAMES } = require('../src/providers')
 
 test('PROVIDER_NAMES contains all four providers', () => {
-  assert.deepEqual(PROVIDER_NAMES, ['anthropic', 'bedrock', 'openrouter', 'openai'])
+  assert.deepEqual(PROVIDER_NAMES, ['anthropic', 'bedrock', 'openrouter', 'openai', 'claude-pro'])
 })
 
 test('getClaudeJsonFields for anthropic sets apiKey and clears baseUrl and flags', () => {

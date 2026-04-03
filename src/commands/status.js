@@ -11,13 +11,30 @@ function fmtTokens(n) {
   return String(n)
 }
 
+// ANSI escape codes are invisible but count toward String.length.
+// padEnd() must account for the extra invisible bytes so visual columns align.
+function visualPadEnd(str, width) {
+  // Strip all ANSI CSI sequences to find the visible character count
+  const visibleLen = str.replace(/\x1b\[[0-9;]*m/g, '').length
+  const pad = width - visibleLen
+  return pad > 0 ? str + ' '.repeat(pad) : str
+}
+
 function cmdStatus() {
   const config = readConfig()
   const usage = readUsage()
 
   if (!config.activeProvider) {
     console.log(chalk.yellow('No active provider. Run: cc-switcher config init'))
-    return
+    // Don't return — still show any configured providers below so the user
+    // can see what's available and choose what to activate.
+    if (Object.keys(config.providers).length === 0) return
+  } else if (!config.providers[config.activeProvider]) {
+    // activeProvider names a provider that no longer exists in config (stale / manually edited)
+    console.log(chalk.yellow(
+      `Active provider "${config.activeProvider}" is not configured. Run: cc-switcher config init`
+    ))
+    if (Object.keys(config.providers).length === 0) return
   }
 
   // Show all configured providers in priority order, then any remaining
@@ -43,7 +60,7 @@ function cmdStatus() {
     if (!pConfig) continue
     const type = getProviderType(name, pConfig)
     const u = usage.providers[name] || { inputTokens: 0, outputTokens: 0 }
-    const used = u.inputTokens + u.outputTokens
+    const used = (Number(u.inputTokens) || 0) + (Number(u.outputTokens) || 0)
     const limit = pConfig.monthlyTokenLimit || 0
     const pct = limit > 0 ? Math.round((used / limit) * 100) : 0
     const threshold = pConfig.warningThreshold || 0.9
@@ -51,7 +68,9 @@ function cmdStatus() {
 
     const indicator = isActive ? chalk.green('●') : ' '
     const label = name + (type !== name ? chalk.gray(` (${type})`) : '')
-    const providerStr = (indicator + ' ' + label).padEnd(COL.provider + 2 + (type !== name ? type.length + 3 : 0))
+    // Use visualPadEnd so ANSI escape codes from chalk don't throw off column widths
+    const providerTarget = COL.provider + 2 + (type !== name ? type.length + 3 : 0)
+    const providerStr = visualPadEnd(indicator + ' ' + label, providerTarget)
     const usedStr = (fmtTokens(used) + ' tok').padEnd(COL.used)
     const limitStr = (limit > 0 ? fmtTokens(limit) : 'unconfigured').padEnd(COL.limit)
     const pctStr = (limit > 0 ? `${pct}%` : '-').padEnd(COL.pct)

@@ -2,9 +2,9 @@
 'use strict'
 const readline = require('readline')
 const chalk = require('chalk')
-const { setProviderConfig, readConfig, writeConfig } = require('../config')
+const { setProviderConfig, readConfig, writeConfig, deleteProviderConfig } = require('../config')
 const { PROVIDER_TYPES } = require('../providers')
-const { switchTo } = require('../switcher')
+const { switchTo, readClaudeJson } = require('../switcher')
 
 function cmdConfigSet(args) {
   // cc-switcher config set <provider> <key> <value>
@@ -22,9 +22,45 @@ function cmdConfigSet(args) {
     console.error(`Valid types: ${PROVIDER_TYPES.join(', ')}`)
     process.exit(1)
   }
-  // Coerce numeric strings to numbers
-  const coerced = isNaN(Number(value)) ? value : Number(value)
-  setProviderConfig(provider, key, coerced)
+  // Coerce numeric strings to numbers, but only if the value is a non-empty
+  // string that parses entirely as a finite number.
+  // Avoids Number('') === 0 turning empty-string values into the number 0.
+  const num = Number(value)
+  const coerced = (typeof value === 'string' && value.trim() !== '' && !isNaN(num) && isFinite(num))
+    ? num
+    : value
+  // Reject nonsensical values for known numeric fields
+  if (key === 'monthlyTokenLimit' && (typeof coerced !== 'number' || coerced <= 0)) {
+    console.error(chalk.red('monthlyTokenLimit must be a positive integer'))
+    process.exit(1)
+  }
+  if (key === 'warningThreshold' && (typeof coerced !== 'number' || coerced <= 0 || coerced > 1)) {
+    console.error(chalk.red('warningThreshold must be a number between 0 (exclusive) and 1 (inclusive)'))
+    process.exit(1)
+  }
+  // Single read-modify-write instead of 3 separate round-trips.
+  // This reduces the TOCTOU window and eliminates redundant disk I/O.
+  const config = readConfig()
+  if (!config.providers[provider]) config.providers[provider] = {}
+  config.providers[provider][key] = coerced
+
+  // Add provider to priority list if not already present
+  if (!config.priority.includes(provider)) {
+    config.priority.push(provider)
+  }
+
+  // When registering a claude-pro provider, capture the current oauthAccount
+  // from ~/.claude.json so it can be restored when switching back later
+  if (key === 'type' && value === 'claude-pro') {
+    const currentJson = readClaudeJson()
+    if (currentJson.oauthAccount) {
+      config.providers[provider].oauthAccount = currentJson.oauthAccount
+      if (!config.savedOauthAccount) config.savedOauthAccount = currentJson.oauthAccount
+    }
+  }
+
+  writeConfig(config)
+
   console.log(chalk.green(`Set ${provider}.${key}`))
 }
 
@@ -43,7 +79,20 @@ function cmdConfigPriority(args) {
 }
 
 function ask(rl, question) {
-  return new Promise(resolve => rl.question(question, resolve))
+  return new Promise((resolve) => {
+    // If readline is already closed (e.g. stdin EOF was received), resolve
+    // immediately with '' rather than hanging forever waiting for a callback
+    // that rl.question() will never call on a closed interface.
+    if (rl.closed) return resolve('')
+    let answered = false
+    const onClose = () => { if (!answered) { answered = true; resolve('') } }
+    rl.once('close', onClose)
+    rl.question(question, (answer) => {
+      answered = true
+      rl.removeListener('close', onClose)
+      resolve(answer)
+    })
+  })
 }
 
 async function cmdConfigInit() {
@@ -54,6 +103,8 @@ async function cmdConfigInit() {
     options.forEach((opt, i) => console.log(`  ${i + 1}) ${opt}`))
     while (true) {
       const ans = (await ask(rl, `\n> `)).trim()
+      // If stdin was closed mid-prompt, bail out cleanly instead of looping forever.
+      if (rl.closed) throw new Error('Input closed unexpectedly. Exiting wizard.')
       const n = parseInt(ans)
       if (n >= 1 && n <= options.length) return n - 1
       console.log(chalk.yellow(`Please enter 1-${options.length}`))
@@ -64,7 +115,21 @@ async function cmdConfigInit() {
     const existing = config.providers[providerName] || {}
     console.log(chalk.cyan(`\n── Configure ${providerName} (${providerType}) ──`))
 
-    if (providerType === 'bedrock') {
+    if (providerType === 'claude-pro') {
+      const currentJson = readClaudeJson()
+      const oauthAccount = currentJson.oauthAccount
+      if (!oauthAccount) {
+        console.log(chalk.yellow(`\n  No active Claude Pro session found in ~/.claude.json.`))
+        console.log(chalk.yellow(`  Make sure you're logged in (run: claude /login) before registering claude-pro.`))
+        return false
+      }
+      if (!config.providers[providerName]) config.providers[providerName] = {}
+      if (providerName !== providerType) config.providers[providerName].type = providerType
+      config.providers[providerName].oauthAccount = oauthAccount
+      if (!config.priority.includes(providerName)) config.priority.push(providerName)
+      console.log(chalk.green(`\nProvider '${providerName}' registered (${oauthAccount?.emailAddress || JSON.stringify(oauthAccount)}).`))
+      return true
+    } else if (providerType === 'bedrock') {
       const profile = (await ask(rl, `  AWS profile [${existing.awsProfile || 'default'}]: `)).trim()
       const region = (await ask(rl, `  AWS region [${existing.awsRegion || 'us-east-1'}]: `)).trim()
       const model = (await ask(rl, `  Model (optional)${existing.model ? ` [${existing.model}]` : ''}: `)).trim()
@@ -77,7 +142,18 @@ async function cmdConfigInit() {
       config.providers[providerName].awsRegion = region || existing.awsRegion || 'us-east-1'
       if (model) config.providers[providerName].model = model
       else if (existing.model) config.providers[providerName].model = existing.model
-      config.providers[providerName].monthlyTokenLimit = Number(limit) || limitDefault
+      // Validate the entered limit: blank = keep default, positive number = use it,
+      // anything else (zero, negative, non-numeric) = warn and use default.
+      let parsedLimit = limitDefault
+      if (limit !== '') {
+        const n = Number(limit)
+        if (isNaN(n) || n <= 0) {
+          console.log(chalk.yellow(`  Invalid limit "${limit}" — using default ${limitDefault}.`))
+        } else {
+          parsedLimit = n
+        }
+      }
+      config.providers[providerName].monthlyTokenLimit = parsedLimit
       config.providers[providerName].warningThreshold = existing.warningThreshold || 0.9
       console.log(chalk.green(`\nProvider '${providerName}' configured.`))
     } else {
@@ -115,7 +191,11 @@ async function cmdConfigInit() {
       else if (existing.model) config.providers[providerName].model = existing.model
 
       const resolvedLimit = limit ? Number(limit) : (existing.monthlyTokenLimit || undefined)
-      if (resolvedLimit) config.providers[providerName].monthlyTokenLimit = resolvedLimit
+      if (limit !== '' && (isNaN(resolvedLimit) || resolvedLimit <= 0)) {
+        console.log(chalk.yellow(`  Invalid limit "${limit}" — skipped. Leave blank to keep existing value.`))
+      } else if (resolvedLimit && resolvedLimit > 0) {
+        config.providers[providerName].monthlyTokenLimit = resolvedLimit
+      }
       config.providers[providerName].warningThreshold = existing.warningThreshold || 0.9
       console.log(chalk.green(`\nProvider '${providerName}' configured.`))
     }
@@ -128,81 +208,123 @@ async function cmdConfigInit() {
 
   const config = readConfig()
 
-  while (true) {
-    const existingNames = Object.keys(config.providers)
-    const menuOptions = ['Add / edit a provider', 'Set active provider', 'Set priority order', 'Done']
-    const choice = await menu('What would you like to do?', menuOptions)
+  try {
+    while (true) {
+      const existingNames = Object.keys(config.providers)
+      const menuOptions = ['Add / edit a provider', 'Set active provider', 'Set priority order', 'Done']
+      const choice = await menu('What would you like to do?', menuOptions)
 
-    if (choice === 0) {
-      if (existingNames.length > 0) {
-        console.log(chalk.dim(`  Existing: ${existingNames.join(', ')}`))
-      }
-      const nameInput = (await ask(rl, '  Provider name (or leave blank to pick a built-in type): ')).trim()
-
-      let providerName, providerType
-
-      if (!nameInput) {
-        const typeIdx = await menu('Select provider type:', PROVIDER_TYPES)
-        providerType = PROVIDER_TYPES[typeIdx]
-        providerName = providerType
-      } else {
-        providerName = nameInput
-        if (PROVIDER_TYPES.includes(providerName)) {
-          providerType = providerName
-        } else {
-          const existing = config.providers[providerName]
-          const existingType = existing && existing.type
-          const typeIdx = await menu(
-            `Provider type for '${providerName}':`,
-            PROVIDER_TYPES.map(t => (t === existingType ? `${t} (current)` : t))
-          )
-          providerType = PROVIDER_TYPES[typeIdx]
+      if (choice === 0) {
+        if (existingNames.length > 0) {
+          console.log(chalk.dim(`  Existing: ${existingNames.join(', ')}`))
         }
+        const nameInput = (await ask(rl, '  Provider name (or leave blank to pick a built-in type): ')).trim()
+
+        let providerName, providerType
+
+        if (!nameInput) {
+          const typeIdx = await menu('Select provider type:', PROVIDER_TYPES)
+          providerType = PROVIDER_TYPES[typeIdx]
+          providerName = providerType
+        } else {
+          providerName = nameInput
+          if (PROVIDER_TYPES.includes(providerName)) {
+            providerType = providerName
+          } else {
+            const existing = config.providers[providerName]
+            const existingType = existing && existing.type
+            const typeIdx = await menu(
+              `Provider type for '${providerName}':`,
+              PROVIDER_TYPES.map(t => (t === existingType ? `${t} (current)` : t))
+            )
+            providerType = PROVIDER_TYPES[typeIdx]
+          }
+        }
+
+        await configureProvider(config, providerName, providerType)
+
+      } else if (choice === 1) {
+        const names = Object.keys(config.providers)
+        if (names.length === 0) {
+          console.log(chalk.yellow('  No providers configured yet.'))
+          continue
+        }
+        const idx = await menu('Select active provider:', names.map(n => n === config.activeProvider ? `${n} (current)` : n))
+        config.activeProvider = names[idx]
+        console.log(chalk.green(`  Active provider: ${config.activeProvider}`))
+
+      } else if (choice === 2) {
+        const current = config.priority.length > 0 ? config.priority : Object.keys(config.providers)
+        console.log(chalk.dim(`  Current: ${current.join(', ')}`))
+        const input = (await ask(rl, '  Enter priority order (space-separated): ')).trim()
+        if (input) {
+          config.priority = input.split(/\s+/)
+          console.log(chalk.green(`  Priority: ${config.priority.join(', ')}`))
+        }
+
+      } else {
+        break
       }
-
-      await configureProvider(config, providerName, providerType)
-
-    } else if (choice === 1) {
-      const names = Object.keys(config.providers)
-      if (names.length === 0) {
-        console.log(chalk.yellow('  No providers configured yet.'))
-        continue
-      }
-      const idx = await menu('Select active provider:', names.map(n => n === config.activeProvider ? `${n} (current)` : n))
-      config.activeProvider = names[idx]
-      console.log(chalk.green(`  Active provider: ${config.activeProvider}`))
-
-    } else if (choice === 2) {
-      const current = config.priority.length > 0 ? config.priority : Object.keys(config.providers)
-      console.log(chalk.dim(`  Current: ${current.join(', ')}`))
-      const input = (await ask(rl, '  Enter priority order (space-separated): ')).trim()
-      if (input) {
-        config.priority = input.split(/\s+/)
-        console.log(chalk.green(`  Priority: ${config.priority.join(', ')}`))
-      }
-
-    } else {
-      break
     }
-  }
 
-  if (!config.activeProvider) {
-    const first = config.priority.find(n => config.providers[n]) || Object.keys(config.providers)[0]
-    if (first) config.activeProvider = first
-  }
-
-  writeConfig(config)
-  rl.close()
-  console.log(chalk.green('\nConfiguration saved.'))
-  if (config.activeProvider) {
-    try {
-      switchTo(config.activeProvider)
-      console.log(`Active provider: ${config.activeProvider}`)
-    } catch (err) {
-      console.log(chalk.yellow(`Note: Could not apply provider: ${err.message}`))
-      console.log(`Run: cc-switcher use ${config.activeProvider}`)
+    if (!config.activeProvider) {
+      const first = config.priority.find(n => config.providers[n]) || Object.keys(config.providers)[0]
+      if (first) config.activeProvider = first
     }
+
+    writeConfig(config)
+    console.log(chalk.green('\nConfiguration saved.'))
+    if (config.activeProvider) {
+      try {
+        switchTo(config.activeProvider)
+        console.log(`Active provider: ${config.activeProvider}`)
+      } catch (err) {
+        console.log(chalk.yellow(`Note: Could not apply provider: ${err.message}`))
+        console.log(`Run: cc-switcher use ${config.activeProvider}`)
+      }
+    }
+  } finally {
+    // Always close readline — even if an error is thrown mid-wizard — to release
+    // stdin and allow the process to exit cleanly.
+    rl.close()
   }
 }
 
-module.exports = { cmdConfigSet, cmdConfigPriority, cmdConfigInit }
+function cmdConfigDelete(args) {
+  // cc-switcher config delete <provider>
+  const provider = args._[2]
+  if (!provider) {
+    console.error(chalk.red('Usage: cc-switcher config delete <provider>'))
+    const config = readConfig()
+    const names = Object.keys(config.providers)
+    if (names.length) console.error(`Configured providers: ${names.join(', ')}`)
+    process.exit(1)
+  }
+  const removed = deleteProviderConfig(provider)
+  if (!removed) {
+    console.error(chalk.red(`Provider "${provider}" not found.`))
+    process.exit(1)
+  }
+  console.log(chalk.green(`Deleted provider: ${provider}`))
+}
+
+function cmdConfigUse(args) {
+  // cc-switcher config use <provider>  — immediately activate a configured provider
+  const provider = args._[2]
+  if (!provider) {
+    console.error(chalk.red('Usage: cc-switcher config use <provider>'))
+    const config = readConfig()
+    const names = Object.keys(config.providers)
+    if (names.length) console.error(`Configured providers: ${names.join(', ')}`)
+    process.exit(1)
+  }
+  try {
+    switchTo(provider)
+    console.log(chalk.green(`Switched to ${provider}`))
+  } catch (err) {
+    console.error(chalk.red(err.message))
+    process.exit(1)
+  }
+}
+
+module.exports = { cmdConfigSet, cmdConfigPriority, cmdConfigInit, cmdConfigDelete, cmdConfigUse }

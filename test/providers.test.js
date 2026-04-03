@@ -4,8 +4,8 @@ const { test } = require('node:test')
 const assert = require('node:assert/strict')
 const { getClaudeJsonFields, getProviderType, isQuotaExceededError, PROVIDER_TYPES, PROVIDER_NAMES } = require('../src/providers')
 
-test('PROVIDER_TYPES contains all four types', () => {
-  assert.deepEqual(PROVIDER_TYPES, ['anthropic', 'bedrock', 'openrouter', 'openai'])
+test('PROVIDER_TYPES contains all five types', () => {
+  assert.deepEqual(PROVIDER_TYPES, ['anthropic', 'bedrock', 'openrouter', 'openai', 'claude-pro'])
 })
 
 test('PROVIDER_NAMES is an alias for PROVIDER_TYPES', () => {
@@ -88,8 +88,8 @@ test('getClaudeJsonFields passes model through for all providers', () => {
   assert.equal(getClaudeJsonFields('openai', { apiKey: 'k', baseUrl: 'u', model: 'gpt-4o' }).model, 'gpt-4o')
 })
 
-test('getClaudeJsonFields model is null when not configured', () => {
-  assert.equal(getClaudeJsonFields('anthropic', { apiKey: 'k' }).model, null)
+test('getClaudeJsonFields model is absent when not configured', () => {
+  assert.equal(getClaudeJsonFields('anthropic', { apiKey: 'k' }).model, undefined)
 })
 
 test('isQuotaExceededError detects rate_limit_exceeded', () => {

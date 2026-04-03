@@ -10,15 +10,18 @@ const USAGE = `
 Usage: cc-switcher <command> [options]
 
 Commands:
-  use <provider>                    Switch to a specific provider
+  use <provider>                    Switch to a specific provider immediately
   status                            Show provider usage and quota
   config set <provider> <key> <val> Set a provider config value
+  config use <provider>             Immediately activate a configured provider
+  config delete <provider>          Remove a provider from config
   config priority [p1 p2 ...]       Show or set auto-switch priority order
   config init                       Interactive setup wizard
   auto-check                        Check quota and auto-switch (called by hook)
   install-hooks                     Install PostToolUse hook in Claude Code
+  shell-init [--rc <file>]          Install shell env hook in ~/.zshrc (run once)
 
-Built-in types: anthropic, bedrock, openrouter, openai
+Built-in types: claude-pro, anthropic, bedrock, openrouter, openai
 
 Multiple instances of the same type are supported via custom names:
   cc-switcher config set work   type anthropic
@@ -42,10 +45,12 @@ async function main() {
     }
     case 'config': {
       const sub = args._[1]
-      const { cmdConfigSet, cmdConfigPriority, cmdConfigInit } = require('./commands/configCmd')
+      const { cmdConfigSet, cmdConfigPriority, cmdConfigInit, cmdConfigDelete, cmdConfigUse } = require('./commands/configCmd')
       if (sub === 'set') cmdConfigSet(args)
       else if (sub === 'priority') cmdConfigPriority(args)
       else if (sub === 'init') await cmdConfigInit()
+      else if (sub === 'delete') cmdConfigDelete(args)
+      else if (sub === 'use') cmdConfigUse(args)
       else { console.error(chalk.red(`Unknown config subcommand: ${sub}`)); process.exit(1) }
       break
     }
@@ -57,6 +62,11 @@ async function main() {
     case 'install-hooks': {
       const { cmdInstallHooks } = require('./commands/installHooks')
       cmdInstallHooks()
+      break
+    }
+    case 'shell-init': {
+      const { cmdShellInit } = require('./commands/shellInit')
+      cmdShellInit(args)
       break
     }
     default:
